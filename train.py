@@ -174,6 +174,14 @@ def main():
     for param in diffusion.parameters():
         param.requires_grad = True
 
+    # Use float16 on CUDA to save massive amounts of VRAM and prevent OOM
+    if "cuda" in str(device):
+        print("Ensuring all models are cast to Half-Precision (FP16) on CUDA...")
+        encoder = encoder.half()
+        decoder = decoder.half()
+        diffusion = diffusion.half()
+        clip = clip.half()
+
     # DDPM Noise Sampler
     # Create generator on target device for reproducibility
     generator = torch.Generator(device=device)
@@ -239,6 +247,9 @@ def main():
     # Enable amp (Automatic Mixed Precision) for memory savings on modern GPUs
     scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
 
+    model_dtype = next(diffusion.parameters()).dtype
+    print(f"Model weight precision dtype: {model_dtype}")
+
     # Resume from checkpoint if requested
     if args.resume:
         if not os.path.exists(args.resume):
@@ -270,7 +281,7 @@ def main():
             optimizer.zero_grad()
             
             # Load and transfer batch items
-            images = batch["pixel_values"].to(device)  # (Batch_Size, 3, 512, 512)
+            images = batch["pixel_values"].to(device, dtype=model_dtype)  # (Batch_Size, 3, 512, 512)
             captions = batch["caption"]
             
             # Encode captions to CLIP input context
@@ -285,7 +296,7 @@ def main():
             with torch.no_grad():
                 # Encoder needs a random noise matching target latent shape scaling
                 latents_shape = (images.shape[0], 4, 64, 64)
-                encoder_noise = torch.randn(latents_shape, device=device)
+                encoder_noise = torch.randn(latents_shape, device=device, dtype=model_dtype)
                 # latents: (Batch_Size, 4, 64, 64)
                 latents = encoder(images, encoder_noise)
                 
@@ -295,7 +306,7 @@ def main():
             timesteps = torch.randint(0, sampler.num_train_timesteps, (latents.shape[0],), device=device)
 
             # Compute time-embeddings for batched timesteps -> (Batch_Size, 320)
-            time_embedding = get_time_embedding(timesteps, device)
+            time_embedding = get_time_embedding(timesteps, device).to(dtype=model_dtype)
 
             # Apply the DDPM forward diffusion formula q(x_t | x_0) directly using the
             # SAME noise tensor that the model will be trained to predict.
@@ -313,11 +324,9 @@ def main():
                 sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
             noisy_latents = sqrt_alpha_prod * latents + sqrt_one_minus_alpha_prod * noise
             
-            # Predict noise target (using UNet)
-            # We wrap with mixed precision autocast
-            with torch.amp.autocast(device_type=device, enabled=(device == "cuda")):
-                predicted_noise = diffusion(noisy_latents, context, time_embedding)
-                loss = mse_loss(predicted_noise, noise)
+            # Predict noise target (using UNet) — models are natively in model_dtype, no autocast needed
+            predicted_noise = diffusion(noisy_latents, context, time_embedding)
+            loss = mse_loss(predicted_noise, noise)
 
             # Backpropagation with gradient clipping to prevent exploding gradients
             if device == "cuda":

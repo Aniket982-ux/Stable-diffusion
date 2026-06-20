@@ -39,6 +39,10 @@ def generate(
         else:
             generator.manual_seed(seed)
 
+        # Detect the model's native dtype dynamically (e.g. float32 or float16)
+        diffusion_model_temp = models["diffusion"]
+        model_dtype = next(diffusion_model_temp.parameters()).dtype
+
         clip = models["clip"]
         clip.to(device)
         
@@ -88,7 +92,7 @@ def generate(
             # (Height, Width, Channel)
             input_image_tensor = np.array(input_image_tensor)
             # (Height, Width, Channel) -> (Height, Width, Channel)
-            input_image_tensor = torch.tensor(input_image_tensor, dtype=torch.float32, device=device)
+            input_image_tensor = torch.tensor(input_image_tensor, dtype=model_dtype, device=device)
             # (Height, Width, Channel) -> (Height, Width, Channel)
             input_image_tensor = rescale(input_image_tensor, (0, 255), (-1, 1))
             # (Height, Width, Channel) -> (Batch_Size, Height, Width, Channel)
@@ -97,7 +101,7 @@ def generate(
             input_image_tensor = input_image_tensor.permute(0, 3, 1, 2)
 
             # (Batch_Size, 4, Latents_Height, Latents_Width)
-            encoder_noise = torch.randn(latents_shape, generator=generator, device=device)
+            encoder_noise = torch.randn(latents_shape, generator=generator, device=device, dtype=model_dtype)
             # (Batch_Size, 4, Latents_Height, Latents_Width)
             latents = encoder(input_image_tensor, encoder_noise)
 
@@ -109,7 +113,7 @@ def generate(
             to_idle(encoder)
         else:
             # (Batch_Size, 4, Latents_Height, Latents_Width)
-            latents = torch.randn(latents_shape, generator=generator, device=device)
+            latents = torch.randn(latents_shape, generator=generator, device=device, dtype=model_dtype)
 
         diffusion = models["diffusion"]
         diffusion.to(device)
@@ -117,7 +121,7 @@ def generate(
         timesteps = tqdm(sampler.timesteps)
         for i, timestep in enumerate(timesteps):
             # (1, 320)
-            time_embedding = get_time_embedding(timestep).to(device)
+            time_embedding = get_time_embedding(timestep).to(device, dtype=model_dtype)
 
             # (Batch_Size, 4, Latents_Height, Latents_Width)
             model_input = latents
