@@ -329,7 +329,7 @@ def main():
             loss = mse_loss(predicted_noise, noise)
 
             # Backpropagation with gradient clipping to prevent exploding gradients
-            if device == "cuda":
+            if device == "cuda" and model_dtype == torch.float32:
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(diffusion.parameters(), max_norm=1.0)
