@@ -174,14 +174,6 @@ def main():
     for param in diffusion.parameters():
         param.requires_grad = True
 
-    # Use float16 on CUDA to save massive amounts of VRAM and prevent OOM
-    if "cuda" in str(device):
-        print("Ensuring all models are cast to Half-Precision (FP16) on CUDA...")
-        encoder = encoder.half()
-        decoder = decoder.half()
-        diffusion = diffusion.half()
-        clip = clip.half()
-
     # DDPM Noise Sampler
     # Create generator on target device for reproducibility
     generator = torch.Generator(device=device)
@@ -231,8 +223,20 @@ def main():
         train_dataset = TinyDummyDataset(size=16)
         dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
-    # 4. Optimizer and Loss
-    optimizer = torch.optim.AdamW(diffusion.parameters(), lr=args.lr)
+    # 4. Optimizer and Loss (Use memory-optimized 8-bit AdamW on CUDA if bitsandbytes is installed)
+    optimizer_name = "Standard PyTorch AdamW (32-bit)"
+    try:
+        import bitsandbytes as bnb
+        if device == "cuda":
+            optimizer = bnb.optim.AdamW8bit(diffusion.parameters(), lr=args.lr)
+            optimizer_name = "BitsAndBytes AdamW (8-bit)"
+        else:
+            optimizer = torch.optim.AdamW(diffusion.parameters(), lr=args.lr)
+    except ImportError:
+        print("Note: bitsandbytes not installed. Using standard PyTorch AdamW instead.")
+        optimizer = torch.optim.AdamW(diffusion.parameters(), lr=args.lr)
+    
+    print(f"Initialized Optimizer: {optimizer_name}")
     mse_loss = nn.MSELoss()
 
     print("\n=== Start of Training Testrun ===")
@@ -324,12 +328,13 @@ def main():
                 sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
             noisy_latents = sqrt_alpha_prod * latents + sqrt_one_minus_alpha_prod * noise
             
-            # Predict noise target (using UNet) — models are natively in model_dtype, no autocast needed
-            predicted_noise = diffusion(noisy_latents, context, time_embedding)
-            loss = mse_loss(predicted_noise, noise)
+            # Predict noise target (using UNet) under mixed-precision autocast
+            with torch.amp.autocast("cuda", enabled=(device == "cuda")):
+                predicted_noise = diffusion(noisy_latents, context, time_embedding)
+                loss = mse_loss(predicted_noise, noise)
 
             # Backpropagation with gradient clipping to prevent exploding gradients
-            if device == "cuda" and model_dtype == torch.float32:
+            if device == "cuda":
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(diffusion.parameters(), max_norm=1.0)

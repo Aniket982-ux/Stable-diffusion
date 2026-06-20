@@ -70,6 +70,8 @@ Fine-tuning generative diffusion models benefits heavily from high-throughput ha
   2. Clone this repository and install dependencies:
      ```bash
      pip install -r requirements.txt
+     # (Highly recommended for ≤ 16GB VRAM GPUs like Colab T4) Install bitsandbytes for 8-bit AdamW optimizer
+     pip install bitsandbytes
      ```
   3. Authenticate Weights & Biases (required before the first training run — skip with `--no_wandb` to disable logging entirely):
      ```bash
