@@ -274,7 +274,7 @@ def main():
             captions = batch["caption"]
             
             # Encode captions to CLIP input context
-            token_ids = tokenizer.batch_encode_plus(
+            token_ids = tokenizer(
                 captions, padding="max_length", max_length=77, return_tensors="pt"
             ).input_ids.to(device)
             # context: (Batch_Size, 77, 768)

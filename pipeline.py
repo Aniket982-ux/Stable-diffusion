@@ -44,7 +44,7 @@ def generate(
         
         if do_cfg:
             # Convert into a list of length Seq_Len=77
-            cond_tokens = tokenizer.batch_encode_plus(
+            cond_tokens = tokenizer(
                 [prompt], padding="max_length", max_length=77
             ).input_ids
             # (Batch_Size, Seq_Len)
@@ -52,7 +52,7 @@ def generate(
             # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim)
             cond_context = clip(cond_tokens)
             # Convert into a list of length Seq_Len=77
-            uncond_tokens = tokenizer.batch_encode_plus(
+            uncond_tokens = tokenizer(
                 [uncond_prompt], padding="max_length", max_length=77
             ).input_ids
             # (Batch_Size, Seq_Len)
@@ -63,7 +63,7 @@ def generate(
             context = torch.cat([cond_context, uncond_context])
         else:
             # Convert into a list of length Seq_Len=77
-            tokens = tokenizer.batch_encode_plus(
+            tokens = tokenizer(
                 [prompt], padding="max_length", max_length=77
             ).input_ids
             # (Batch_Size, Seq_Len)

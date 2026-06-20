@@ -62,7 +62,7 @@ def test_tokenizer():
     print("  Tokenizer loaded.")
 
     sample = "a naruto character with blue eyes standing in a forest"
-    ids = tokenizer.batch_encode_plus([sample], padding="max_length", max_length=77, return_tensors="pt").input_ids
+    ids = tokenizer([sample], padding="max_length", max_length=77, return_tensors="pt").input_ids
     assert ids.shape == (1, 77), f"Expected (1, 77), got {ids.shape}"
     print(f"  Token ids shape: {ids.shape}  ✓")
 
@@ -76,7 +76,7 @@ def test_clip():
     print(f"  CLIP parameters: {total:,}")
 
     tokenizer = CLIPTokenizer.from_pretrained("stable-diffusion-v1-5/stable-diffusion-v1-5", subfolder="tokenizer")
-    ids = tokenizer.batch_encode_plus(
+    ids = tokenizer(
         ["a naruto character"], padding="max_length", max_length=77, return_tensors="pt"
     ).input_ids.to(DEVICE)
 
@@ -273,7 +273,7 @@ def test_end_to_end_minibatch():
     caption = ["a naruto character with spiky blond hair"]
 
     # Tokenize
-    ids = tokenizer.batch_encode_plus(caption, padding="max_length", max_length=77, return_tensors="pt").input_ids
+    ids = tokenizer(caption, padding="max_length", max_length=77, return_tensors="pt").input_ids
     with torch.no_grad():
         context = clip_m(ids)
 
