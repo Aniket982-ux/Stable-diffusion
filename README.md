@@ -1,4 +1,3 @@
-
 ## Stable Diffusion Model for Text to Image and Image to Image Conversion
 
 ### Introduction
@@ -144,4 +143,60 @@ Every checkpoint saved by `--save_interval` (default every 10 steps) and the fin
 }
 ```
 
+---
 
+## Multi-GPU DDP Training on Kaggle
+
+This repository fully supports Multi-GPU Distributed Data Parallel (DDP) training. It is optimized to run on environments like Kaggle (2x T4 GPUs).
+
+When running with DDP:
+- The **VAE (Encoder/Decoder)** and **CLIP** models are completely frozen (evaluation mode, no gradients) to save VRAM.
+- The **UNet** is wrapped in `DistributedDataParallel` and synced across all GPUs.
+- Data is automatically sharded across GPUs using `DistributedSampler`.
+- **Weights & Biases (W&B)** logs metrics from *all* GPUs concurrently into the same W&B group, allowing you to compare loss curves from GPU-0 and GPU-1 side-by-side.
+
+### Kaggle Execution Guide
+Paste the following cells sequentially in a Kaggle Notebook:
+
+**Cell 1: Clone & Setup**
+```python
+!git clone https://github.com/Aniket982-ux/Stable-diffusion.git
+%cd Stable-diffusion
+!pip install -q -r requirements.txt
+```
+
+**Cell 2: Download Weights**
+```python
+import os
+os.makedirs("data", exist_ok=True)
+!wget -q --show-progress -O data/v1-5-pruned-emaonly.ckpt "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.ckpt"
+!wget -q -O data/vocab.json "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/tokenizer/vocab.json"
+!wget -q -O data/merges.txt "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/tokenizer/merges.txt"
+```
+*(Tip: Upload the `.ckpt` as a Kaggle Dataset to skip downloading it every session!)*
+
+**Cell 3: W&B Login**
+```python
+import wandb
+wandb.login()
+```
+
+**Cell 4: Launch DDP Training**
+```bash
+!torchrun --standalone --nproc_per_node=2 train.py \
+    --dataset_name "lambdalabs/naruto-blip-captions" \
+    --image_column "image" \
+    --caption_column "text" \
+    --epochs 10 \
+    --batch_size 2 \
+    --lr 1e-4 \
+    --train_from_scratch \
+    --warmup_steps 500 \
+    --save_interval 250 \
+    --eval_interval 100 \
+    --model_file "data/v1-5-pruned-emaonly.ckpt" \
+    --vocab_file "data/vocab.json" \
+    --merges_file "data/merges.txt" \
+    --wandb_project "sd-unet-scratch" \
+    --wandb_name "naruto-ddp"
+```
