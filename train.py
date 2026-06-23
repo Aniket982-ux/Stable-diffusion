@@ -76,7 +76,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size for training")
     parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
     parser.add_argument("--use_dummy", action="store_true", help="Force train on synthetic dummy data for instant testing")
-    parser.add_argument("--save_interval", type=int, default=10, help="Save checkpoint every N steps")
+    parser.add_argument("--save_interval", type=int, default=250, help="Save checkpoint every N steps (recommend 250+)")
     parser.add_argument("--eval_interval", type=int, default=10, help="Log generated evaluation samples every N steps")
     parser.add_argument("--model_file", type=str, default="data/v1-5-pruned-emaonly.ckpt", help="Path to checkpoint weights")
     parser.add_argument("--vocab_file", type=str, default="data/vocab.json", help="Path to vocabulary file")
@@ -273,6 +273,23 @@ def main():
             start_batch = 0
         print(f"[Resume] Restored to epoch {start_epoch + 1}, batch {start_batch}, global step {global_step}")
 
+    # Startup cleanup of stale numbered/unmanaged checkpoints to protect local VM disk
+    ckpt_dir = "checkpoints"
+    if os.path.exists(ckpt_dir):
+        print("\n[Disk Space Safeguard] Cleaning up any old numbered files from prior failed sessions...")
+        for filename in os.listdir(ckpt_dir):
+            # Only delete intermediate step checkpoints
+            if filename.startswith("diffusion_step_") and filename.endswith(".ckpt"):
+                try:
+                    file_path = os.path.join(ckpt_dir, filename)
+                    # Do not delete the file if it is actively targetted by resume
+                    if args.resume and os.path.abspath(args.resume) == os.path.abspath(file_path):
+                        continue
+                    os.remove(file_path)
+                    print(f" -> Deleted old residual checkpoint: {file_path}")
+                except Exception as cleanup_err:
+                    print(f" -> Warning: Could not clean up {filename}: {cleanup_err}")
+
     for epoch in range(start_epoch, args.epochs):
         epoch_loss = 0.0
         epoch_batches = 0  # track actual batches processed (differs from len(dataloader) on resume)
@@ -361,29 +378,26 @@ def main():
                     "train/epoch": epoch + 1
                 })
 
-            # Checkpoint Interval Trigger
+            # Checkpoint Interval Trigger (Overwrites a static file to cap VM disk usage)
             if global_step % args.save_interval == 0:
                 ckpt_dir = "checkpoints"
                 os.makedirs(ckpt_dir, exist_ok=True)
-                ckpt_path = os.path.join(ckpt_dir, f"diffusion_step_{global_step}.ckpt")
-                torch.save({
-                    "diffusion": diffusion.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scaler": scaler.state_dict(),
-                    "global_step": global_step,
-                    "epoch": epoch,
-                    "batch_idx": batch_idx,
-                    "wandb_run_id": wandb.run.id if not args.no_wandb else None,
-                }, ckpt_path)
-                print(f"\n[Artifact] Saved checkpoint to {ckpt_path} (epoch {epoch+1}, batch {batch_idx}, step {global_step})")
-                if not args.no_wandb:
-                    artifact = wandb.Artifact(
-                        name=f"checkpoint-step-{global_step}",
-                        type="model",
-                        metadata={"epoch": epoch + 1, "batch_idx": batch_idx, "global_step": global_step}
-                    )
-                    artifact.add_file(ckpt_path)
-                    wandb.log_artifact(artifact)
+                ckpt_path = os.path.join(ckpt_dir, "diffusion_latest.ckpt")
+                
+                print(f"\n[Storage Checkpoint] Writing latest backup state to {ckpt_path}...")
+                try:
+                    torch.save({
+                        "diffusion": diffusion.state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "scaler": scaler.state_dict(),
+                        "global_step": global_step,
+                        "epoch": epoch,
+                        "batch_idx": batch_idx,
+                        "wandb_run_id": wandb.run.id if not args.no_wandb else None,
+                    }, ckpt_path)
+                    print(f" -> Core states successfully overwritten locally.")
+                except Exception as save_err:
+                    print(f" -> Warning: Local checkpoint save aborted: {save_err}")
 
             # Image Evaluation sampling Trigger
             if global_step % args.eval_interval == 0:
@@ -439,6 +453,8 @@ def main():
     # Save final model weights
     final_path = "checkpoints/diffusion_model_final.ckpt"
     os.makedirs("checkpoints", exist_ok=True)
+    
+    print("\n[Completed] Saving final trained model and releasing resources...")
     torch.save({
         "diffusion": diffusion.state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -448,8 +464,19 @@ def main():
         "batch_idx": -1,
         "wandb_run_id": wandb.run.id if not args.no_wandb else None,
     }, final_path)
-    print(f"\n[Completed] Saved final trained model state to {final_path}")
+    print(f" -> Completed final model file saved to: {final_path}")
+    
+    # Safely purge the massive temporary local progress backup file
+    latest_backup = os.path.join("checkpoints", "diffusion_latest.ckpt")
+    if os.path.exists(latest_backup):
+        try:
+            os.remove(latest_backup)
+            print(f" -> Purged temporary local update file: {latest_backup} (VRAM & Disk recovered!)")
+        except Exception as cleanup_err:
+            print(f" -> Warning: Could not remove temporary backup file: {cleanup_err}")
+
     if not args.no_wandb:
+        print(" -> Registering single final checkpoint as high-value artifact on W&B...")
         artifact = wandb.Artifact(
             name="checkpoint-final",
             type="model",
