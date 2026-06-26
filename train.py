@@ -204,11 +204,20 @@ def main():
             if args.train_from_scratch:
                 if global_rank == 0:
                     print("\n[Scratch Training] Initializing UNet (Diffusion) from absolute scratch (random weights), but using frozen pre-trained VAE and CLIP encoders!")
+                # CRITICAL: Delete the pretrained diffusion loaded by preload_models
+                # before creating the new one — otherwise TWO 3.4GB UNets coexist on GPU!
+                del models["diffusion"]
+                del models
+                import gc; gc.collect()
+                torch.cuda.empty_cache()
                 diffusion = Diffusion().to(device)
             else:
                 if global_rank == 0:
                     print("\n[Fine-tuning Mode] Loading pre-trained UNet (Diffusion) weights from standard checkpoint.")
                 diffusion = models["diffusion"]
+                del models
+                import gc; gc.collect()
+                torch.cuda.empty_cache()
                 
             if global_rank == 0:
                 print("Successfully initialized all model parameters!")
