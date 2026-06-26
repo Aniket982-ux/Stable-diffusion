@@ -61,6 +61,27 @@ class TinyDummyDataset(Dataset):
         caption = DUMMY_CAPTIONS[idx % len(DUMMY_CAPTIONS)]
         return {"pixel_values": pixel_values, "caption": caption}
 
+# Preprocessing transforms
+resize_transform = transforms.Compose([
+    transforms.Resize((512, 512)),
+    transforms.ToTensor(),
+    transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+])
+
+class TextToImageDataset(Dataset):
+    def __init__(self, data, image_col, caption_col):
+        self.data = data
+        self.image_col = image_col
+        self.caption_col = caption_col
+    def __len__(self):
+        return len(self.data)
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        img = item[self.image_col].convert("RGB")
+        pixel_values = resize_transform(img)
+        caption = str(item[self.caption_col])
+        return {"pixel_values": pixel_values, "caption": caption}
+
 def get_time_embedding(timesteps, device):
     """
     Generates time embeddings of size (Batch_Size, 320) for batch processing
@@ -159,7 +180,7 @@ def main():
     if global_rank == 0:
         print("Loading CLIP Tokenizer...")
     if os.path.exists(args.vocab_file) and os.path.exists(args.merges_file):
-        tokenizer = CLIPTokenizer(args.vocab_file, merges_file=args.merges_file)
+        tokenizer = CLIPTokenizer(args.vocab_file, args.merges_file)
         if global_rank == 0:
             print("-> loaded tokenization vocab locally from data folder.")
     else:
@@ -244,28 +265,6 @@ def main():
             hf_dataset = load_dataset(args.dataset_name, split=args.dataset_split)
             if global_rank == 0:
                 print(f"Successfully loaded {args.dataset_name}! Sample count: {len(hf_dataset)}")
-            
-            # Preprocessing transforms
-            resize_transform = transforms.Compose([
-                transforms.Resize((512, 512)),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-            ])
-            
-            class TextToImageDataset(Dataset):
-                def __init__(self, data, image_col, caption_col):
-                    self.data = data
-                    self.image_col = image_col
-                    self.caption_col = caption_col
-                def __len__(self):
-                    return len(self.data)
-                def __getitem__(self, idx):
-                    item = self.data[idx]
-                    img = item[self.image_col].convert("RGB")
-                    pixel_values = resize_transform(img)
-                    caption = str(item[self.caption_col])
-                    return {"pixel_values": pixel_values, "caption": caption}
-            
             train_dataset = TextToImageDataset(hf_dataset, args.image_column, args.caption_column)
             if is_distributed:
                 dist_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=global_rank, shuffle=True)
