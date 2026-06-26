@@ -250,12 +250,12 @@ def main():
     for param in clip.parameters():
         param.requires_grad = False
 
-    # Convert frozen VAE Encoder and CLIP to float16 on CUDA to conserve VRAM
+    # Convert frozen CLIP to float16 on CUDA to conserve VRAM, keeping VAE Encoder in float32 to prevent NaN overflow
     if device.startswith("cuda"):
         if global_rank == 0:
-            print("Casting VAE Encoder and CLIP to float16 to conserve VRAM.")
-        encoder = encoder.to(dtype=torch.float16)
+            print("Casting CLIP to float16 to conserve VRAM. Keeping VAE Encoder in float32 to prevent NaNs.")
         clip = clip.to(dtype=torch.float16)
+        encoder = encoder.to(dtype=torch.float32)
 
     # UNet (Diffusion) is the ONLY trainable component
     diffusion.train()
@@ -532,8 +532,8 @@ def main():
                 raw_diffusion.eval()
                 
                 eval_prompt = "a ninja with red eyes and spiky hair, naruto style, anime illustration"
-                # Move decoder to device for fast evaluation
-                decoder = decoder.to(device, dtype=torch.float16 if device.startswith("cuda") else torch.float32)
+                # Move decoder to device for fast evaluation (run in float32 to avoid NaNs)
+                decoder = decoder.to(device, dtype=torch.float32)
                 eval_models = {
                     "clip": clip,
                     "encoder": encoder,
