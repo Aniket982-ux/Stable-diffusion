@@ -545,19 +545,20 @@ def main():
                     # Run sampling under `no_grad` to output sample image
                     with torch.no_grad():
                         torch.cuda.empty_cache()  # free fragmented VRAM before eval
-                        sampled_img_array = pipeline.generate(
-                            prompt=eval_prompt,
-                            uncond_prompt="",
-                            do_cfg=True,
-                            cfg_scale=8.0,
-                            sampler_name="ddpm",
-                            n_inference_steps=20, # small steps for fast verification during training
-                            models=eval_models,
-                            seed=42,
-                            device=device,
-                            idle_device=None,  # keep models on their current devices
-                            tokenizer=tokenizer
-                        )
+                        with torch.amp.autocast("cuda", enabled=device.startswith("cuda")):
+                            sampled_img_array = pipeline.generate(
+                                prompt=eval_prompt,
+                                uncond_prompt="",
+                                do_cfg=True,
+                                cfg_scale=8.0,
+                                sampler_name="ddpm",
+                                n_inference_steps=20, # small steps for fast verification during training
+                                models=eval_models,
+                                seed=42,
+                                device=device,
+                                idle_device=None,  # keep models on their current devices
+                                tokenizer=tokenizer
+                            )
                         sampled_pil = Image.fromarray(sampled_img_array)
                         
                         # Log Image to WandB
