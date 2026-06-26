@@ -114,6 +114,7 @@ def main():
     parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint file to resume training from")
     parser.add_argument("--train_from_scratch", action="store_true", help="Initialize UNet (Diffusion) weights randomly instead of loading pretrained weights, while keeping frozen CLIP and VAE preloaded.")
     parser.add_argument("--warmup_steps", type=int, default=500, help="Number of linear warmup steps for training from scratch")
+    parser.add_argument("--no_gradient_checkpointing", action="store_false", dest="gradient_checkpointing", default=True, help="Disable gradient checkpointing (default: enabled to save VRAM and prevent OOM).")
     
     args = parser.parse_args()
 
@@ -249,10 +250,24 @@ def main():
     for param in clip.parameters():
         param.requires_grad = False
 
+    # Convert frozen VAE Encoder and CLIP to float16 on CUDA to conserve VRAM
+    if device.startswith("cuda"):
+        if global_rank == 0:
+            print("Casting VAE Encoder and CLIP to float16 to conserve VRAM.")
+        encoder = encoder.to(dtype=torch.float16)
+        clip = clip.to(dtype=torch.float16)
+
     # UNet (Diffusion) is the ONLY trainable component
     diffusion.train()
     for param in diffusion.parameters():
         param.requires_grad = True
+
+    # Set gradient checkpointing if requested
+    raw_diffusion = diffusion.module if hasattr(diffusion, 'module') else diffusion
+    if hasattr(raw_diffusion, "set_gradient_checkpointing"):
+        raw_diffusion.set_gradient_checkpointing(args.gradient_checkpointing)
+        if global_rank == 0:
+            print(f"Gradient Checkpointing Active: {args.gradient_checkpointing}")
 
     if is_distributed:
         # gradient_as_bucket_view=True eliminates duplicate gradient memory allocations in DDP (saves ~3.4GB VRAM for Stable Diffusion!)
@@ -417,15 +432,15 @@ def main():
             ).input_ids.to(device)
             # context: (Batch_Size, 77, 768)
             with torch.no_grad():
-                context = clip(token_ids)
+                context = clip(token_ids).to(dtype=model_dtype)
             
             # Encode images to latents using VAE Encoder
             with torch.no_grad():
                 # Encoder needs a random noise matching target latent shape scaling
                 latents_shape = (images.shape[0], 4, 64, 64)
-                encoder_noise = torch.randn(latents_shape, device=device, dtype=model_dtype)
+                encoder_noise = torch.randn(latents_shape, device=device, dtype=next(encoder.parameters()).dtype)
                 # latents: (Batch_Size, 4, 64, 64)
-                latents = encoder(images, encoder_noise)
+                latents = encoder(images.to(dtype=next(encoder.parameters()).dtype), encoder_noise).to(dtype=model_dtype)
                 
             # Sample random noise & construct random timesteps
             # timesteps count standard: 1000
@@ -517,6 +532,8 @@ def main():
                 raw_diffusion.eval()
                 
                 eval_prompt = "a ninja with red eyes and spiky hair, naruto style, anime illustration"
+                # Move decoder to device for fast evaluation
+                decoder = decoder.to(device, dtype=torch.float16 if device.startswith("cuda") else torch.float32)
                 eval_models = {
                     "clip": clip,
                     "encoder": encoder,
@@ -538,7 +555,7 @@ def main():
                             models=eval_models,
                             seed=42,
                             device=device,
-                            idle_device="cpu",  # offload models back to CPU after eval to reclaim VRAM
+                            idle_device=None,  # keep models on their current devices
                             tokenizer=tokenizer
                         )
                         sampled_pil = Image.fromarray(sampled_img_array)
@@ -552,6 +569,11 @@ def main():
                         print(f"-> Successfully rendered demo sample!")
                 except Exception as eval_err:
                     print(f"Eval generation test failed during running: {eval_err}")
+                finally:
+                    # Move decoder back to CPU and clear VRAM cache
+                    decoder = decoder.to("cpu")
+                    import gc; gc.collect()
+                    torch.cuda.empty_cache()
                 
                 # Switch back to training mode
                 diffusion.train()

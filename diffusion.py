@@ -196,6 +196,7 @@ class SwitchSequential(nn.Sequential):
 class UNET(nn.Module):
     def __init__(self):
         super().__init__()
+        self.gradient_checkpointing = False
         self.encoders = nn.ModuleList([
             # (Batch_Size, 4, Height / 8, Width / 8) -> (Batch_Size, 320, Height / 8, Width / 8)
             SwitchSequential(nn.Conv2d(4, 320, kernel_size=3, padding=1)),
@@ -288,17 +289,33 @@ class UNET(nn.Module):
         # context: (Batch_Size, Seq_Len, Dim) 
         # time: (1, 1280)
 
+        # If gradient checkpointing is enabled during training, make sure the input x requires grad.
+        # This is necessary because VAE encoder is frozen, so x has requires_grad=False.
+        # PyTorch checkpointing requires at least one input tensor to have requires_grad=True
+        # to trigger the backward pass for parameter gradients.
+        if self.gradient_checkpointing and self.training:
+            x = x.clone().requires_grad_(True)
+
         skip_connections = []
         for layers in self.encoders:
-            x = layers(x, context, time)
+            if self.gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(layers, x, context, time, use_reentrant=False)
+            else:
+                x = layers(x, context, time)
             skip_connections.append(x)
 
-        x = self.bottleneck(x, context, time)
+        if self.gradient_checkpointing and self.training:
+            x = torch.utils.checkpoint.checkpoint(self.bottleneck, x, context, time, use_reentrant=False)
+        else:
+            x = self.bottleneck(x, context, time)
 
         for layers in self.decoders:
             # Since we always concat with the skip connection of the encoder, the number of features increases before being sent to the decoder's layer
             x = torch.cat((x, skip_connections.pop()), dim=1) 
-            x = layers(x, context, time)
+            if self.gradient_checkpointing and self.training:
+                x = torch.utils.checkpoint.checkpoint(layers, x, context, time, use_reentrant=False)
+            else:
+                x = layers(x, context, time)
         
         return x
 
@@ -330,6 +347,9 @@ class Diffusion(nn.Module):
         self.time_embedding = TimeEmbedding(320)
         self.unet = UNET()
         self.final = UNET_OutputLayer(320, 4)
+    
+    def set_gradient_checkpointing(self, enabled=True):
+        self.unet.gradient_checkpointing = enabled
     
     def forward(self, latent, context, time):
         # latent: (Batch_Size, 4, Height / 8, Width / 8)
