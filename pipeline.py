@@ -54,7 +54,7 @@ def generate(
             # (Batch_Size, Seq_Len)
             cond_tokens = torch.tensor(cond_tokens, dtype=torch.long, device=device)
             # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim)
-            cond_context = clip(cond_tokens)
+            cond_context = clip(cond_tokens).to(dtype=model_dtype)
             # Convert into a list of length Seq_Len=77
             uncond_tokens = tokenizer(
                 [uncond_prompt], padding="max_length", max_length=77
@@ -62,7 +62,7 @@ def generate(
             # (Batch_Size, Seq_Len)
             uncond_tokens = torch.tensor(uncond_tokens, dtype=torch.long, device=device)
             # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim)
-            uncond_context = clip(uncond_tokens)
+            uncond_context = clip(uncond_tokens).to(dtype=model_dtype)
             # (Batch_Size, Seq_Len, Dim) + (Batch_Size, Seq_Len, Dim) -> (2 * Batch_Size, Seq_Len, Dim)
             context = torch.cat([cond_context, uncond_context])
         else:
@@ -73,7 +73,7 @@ def generate(
             # (Batch_Size, Seq_Len)
             tokens = torch.tensor(tokens, dtype=torch.long, device=device)
             # (Batch_Size, Seq_Len) -> (Batch_Size, Seq_Len, Dim)
-            context = clip(tokens)
+            context = clip(tokens).to(dtype=model_dtype)
         to_idle(clip)
 
         if sampler_name == "ddpm":
@@ -101,9 +101,9 @@ def generate(
             input_image_tensor = input_image_tensor.permute(0, 3, 1, 2)
 
             # (Batch_Size, 4, Latents_Height, Latents_Width)
-            encoder_noise = torch.randn(latents_shape, generator=generator, device=device, dtype=model_dtype)
+            encoder_noise = torch.randn(latents_shape, generator=generator, device=device, dtype=next(encoder.parameters()).dtype)
             # (Batch_Size, 4, Latents_Height, Latents_Width)
-            latents = encoder(input_image_tensor, encoder_noise)
+            latents = encoder(input_image_tensor.to(dtype=next(encoder.parameters()).dtype), encoder_noise).to(dtype=model_dtype)
 
             # Add noise to the latents (the encoded input image)
             # (Batch_Size, 4, Latents_Height, Latents_Width)
@@ -146,7 +146,7 @@ def generate(
         decoder = models["decoder"]
         decoder.to(device)
         # (Batch_Size, 4, Latents_Height, Latents_Width) -> (Batch_Size, 3, Height, Width)
-        images = decoder(latents)
+        images = decoder(latents.to(dtype=next(decoder.parameters()).dtype))
         to_idle(decoder)
 
         images = rescale(images, (-1, 1), (0, 255), clamp=True)
